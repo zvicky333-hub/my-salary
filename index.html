@@ -126,7 +126,7 @@ function updateRole(){
 empSel.addEventListener('change', updateRole);
 updateRole();
 
-function fmt(n){ return n.toLocaleString('zh-CN',{maximumFractionDigits:0}); }
+function fmt(n){ return n.toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2}); }
 
 document.getElementById('calcBtn').addEventListener('click', function(){
   const errEl = document.getElementById('err1');
@@ -138,9 +138,9 @@ document.getElementById('calcBtn').addEventListener('click', function(){
   const leave = parseFloat(document.getElementById('leave').value);
   const needSales = emp.role === '仓库';
 
-  if((needSales && (isNaN(sales) || sales < 0)) ||
+  if((isNaN(sales) || sales < 0) ||
      (!needSales && (isNaN(huikuan) || huikuan < 0)) ||
-     isNaN(leave) || leave < 0){
+     isNaN(leave) || leave < 0 || leave > 30){
     errEl.textContent = '请填写完整且非负的数值';
     errEl.style.display = 'block';
     return;
@@ -156,7 +156,7 @@ document.getElementById('calcBtn').addEventListener('click', function(){
   if(emp.role === '仓库'){
     commission = sales * rule.monthRate;
     rows.push(['区域销售额', fmt(sales)]);
-    rows.push(['提成(销售额×0.1‰)', fmt(commission)]);
+    rows.push(['提成(销售额×1.0‰)', fmt(commission)]);
   } else {
     completionRate = sales / emp.target;
     rows.push(['区域销售额', fmt(sales) + '(完成率 ' + Math.round(completionRate*100) + '%,' + (completionRate>=1?'达标':'未达标') + ')']);
@@ -255,5 +255,88 @@ document.getElementById('qBtn').addEventListener('click', function(){
   box.style.display = 'block';
 });
 </script>
+<style>
+.wrap{max-width:760px}.panel{background:white;border:1px solid var(--border);border-radius:12px;padding:18px;margin:20px 0}.panel h2{font-size:18px;margin:0 0 12px}.hint{font-size:13px;color:#62625c;line-height:1.7}.grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.primary{background:#185fa5;color:white}.primary:hover{background:#124c87}button:disabled{opacity:.5;cursor:wait}textarea{width:100%;min-height:140px;border:1px solid var(--border);border-radius:8px;padding:12px;font:14px sans-serif;margin-bottom:12px}input[type=file]{height:auto;padding:10px}#ledgerNotice,#importStatus,#saveStatus{white-space:pre-wrap;font-size:14px;line-height:1.6}#ledgerNotice{color:#791f1f}.scroll-table{overflow:auto}th,td{padding:10px 8px!important;text-align:left!important;border-bottom:1px solid #eee;white-space:nowrap}th{font-weight:500;background:#f5f5f4}.stat{font-size:20px;font-weight:600;color:#185fa5}details{margin:18px 0}summary{cursor:pointer;font-size:16px}.mini{width:auto;height:32px;margin:0;padding:0 12px}#previewImage{max-width:100%;max-height:300px;display:none}.badge{display:inline-block;background:#e9f2fc;color:#185fa5;border-radius:8px;padding:5px 9px;font-size:12px}.card{overflow:auto}@media(max-width:520px){.grid{grid-template-columns:1fr}.panel{padding:14px}body{padding:18px 12px} .stat{font-size:18px}}
+</style>
+<script>
+(() => {
+'use strict';
+const $ = id => document.getElementById(id);
+const money = n => Number(n).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2});
+const today = () => {const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;};
+const round = n => Math.round((n+Number.EPSILON)*100)/100;
+const key = 'my-salary-ledger-v1';
+const escapeHTML = s => String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let blocked=false;
+const top = document.createElement('section');top.className='panel';top.innerHTML=`
+<span class="badge">本地工资账本 · 图片识别免费</span><h2 style="margin-top:14px">工资月份与导入</h2>
+<label for="salaryMonth">工资所属月份</label><input id="salaryMonth" type="month">
+<details><summary>导入图片或文字报表</summary>
+<p class="hint">支持 JPG、PNG、WebP 图片，以及 TXT、CSV 文字文件。图片在当前设备识别，不上传报表。首次识别需要联网下载开源组件；识别结果必须核对。PDF、Excel 文件请先截取报表图片。</p>
+<label for="sourceFile">选择图片或文字文件</label><input id="sourceFile" type="file" accept="image/png,image/jpeg,image/webp,.txt,.csv">
+<img id="previewImage" alt="待识别报表预览"><button id="recognizeBtn">识别所选文件</button><p id="importStatus" role="status"></p>
+<label for="ocrText">识别原文（也可直接粘贴报表文字）</label><textarea id="ocrText" placeholder="例如：2026年9月\n员工：李文廷\n销售额：300000\n回款金额：280000"></textarea>
+<button id="parseBtn">从文字提取待核对数据</button><div id="proposal" hidden>
+<p class="hint">只提取明确、唯一的字段。未找到或有多个金额时留空，请自行核对。营业额按销售额处理，不会替代回款。</p>
+<label for="importEmployee">员工</label><select id="importEmployee"><option value="">不更改当前员工</option></select>
+<label for="importMonth">月份</label><input id="importMonth" type="month">
+<div class="grid"><div><label for="importSales">销售额／营业额（元）</label><input id="importSales" type="number" min="0" step="0.01"></div><div><label for="importReceipts">回款／实收（元）</label><input id="importReceipts" type="number" min="0" step="0.01"></div></div>
+<label for="importLeave">请假天数</label><input id="importLeave" type="number" min="0" max="30" step="0.5">
+<button id="applyImport" class="primary">已核对，填入计算器</button></div></details>`;
+document.querySelector('.sub').after(top);
+Object.keys(employees).forEach(n=>{const o=document.createElement('option');o.value=n;o.textContent=n;$('importEmployee').append(o);});
+$('salaryMonth').value=today().slice(0,7);
+const saving=document.createElement('section');saving.className='panel';saving.innerHTML=`<h2>保存工资与发放记录</h2>
+<div class="grid"><div><label for="actualPaid">实际已发金额（元）</label><input id="actualPaid" type="number" min="0" step="0.01" placeholder="未发放填 0" value="0"></div><div><label for="paidDate">最近发放日期</label><input id="paidDate" type="date"></div></div>
+<label for="payNote">备注</label><input id="payNote" maxlength="500" placeholder="例如：已分两次发放、剩余下月补发">
+<p class="hint">实际已发金额填写累计实付金额。同一员工同一月份再次保存会提示更新；修改前的记录会保留在备份文件的历史里。</p>
+<button id="saveMonth" class="primary">计算并保存本月工资</button><button id="saveQuarter">保存本月的季度奖惩记录</button><p id="saveStatus" role="status"></p>`;
+$('result').after(saving);
+const ledger=document.createElement('section');ledger.className='panel';ledger.innerHTML=`<h2>年度工资账本</h2>
+<p class="hint">记录保存在当前设备、当前浏览器中；换设备不会自动同步，清理网站数据会清除记录。请定期下载备份。年度汇总按工资所属月份统计，季度调整单独保存后计入应发总额。</p>
+<p id="ledgerNotice" role="alert"></p><div class="grid"><div><label for="ledgerYear">年份</label><input id="ledgerYear" type="number" min="1900" max="2200"></div><div><label for="ledgerEmployee">员工筛选</label><select id="ledgerEmployee"><option value="">全部员工</option></select></div></div>
+<p id="annualTotals" class="stat"></p><div class="scroll-table"><table><thead><tr><th>员工</th><th>应发合计</th><th>已发合计</th><th>应发减已发</th></tr></thead><tbody id="annualRows"></tbody></table></div>
+<h3 style="font-size:16px">每月明细</h3><div class="scroll-table"><table><thead><tr><th>月份</th><th>员工</th><th>类型</th><th>应发</th><th>已发</th><th>差额</th><th>发放日期</th><th>操作</th></tr></thead><tbody id="recordRows"></tbody></table></div>
+<p id="backupInfo" class="hint"></p><button id="backupBtn">下载完整备份（含修改历史）</button><button id="csvBtn">导出当前年份明细 CSV</button>
+<label for="restoreFile">恢复／合并备份</label><input id="restoreFile" type="file" accept=".json,application/json"><button id="restoreBtn">检查并导入备份</button>
+<p class="hint">恢复时只添加不存在的员工月份记录，已有记录保持不变。两台设备可以通过备份文件手动迁移；同一月份的不同版本需要核对后在明细里更新。</p>`;
+document.querySelector('.wrap').append(ledger);
+Object.keys(employees).forEach(n=>{const o=document.createElement('option');o.value=n;o.textContent=n;$('ledgerEmployee').append(o);});
+$('ledgerYear').value=today().slice(0,4);
+function id(r){return `${r.employee}|${r.month}|${r.kind}`;}
+function valid(r){return r&&Object.hasOwn(employees,r.employee)&&/^\d{4}-(0[1-9]|1[0-2])$/.test(r.month)&&['monthly','quarterly'].includes(r.kind)&&['due','paid','sales','receipts','leave','commission'].every(k=>Number.isFinite(r[k]))&&r.paid>=0&&r.sales>=0&&r.receipts>=0&&r.leave>=0&&r.leave<=30&&typeof r.note==='string'&&r.note.length<=500&&typeof r.paidDate==='string'&&(r.paidDate===''||/^\d{4}-\d{2}-\d{2}$/.test(r.paidDate))&&typeof r.updatedAt==='string'&&Number.isFinite(Date.parse(r.updatedAt));}
+function read(){try{const raw=localStorage.getItem(key);if(!raw)return {version:1,records:[],history:[],lastBackup:''};const d=JSON.parse(raw);if(d.version!==1||!Array.isArray(d.records)||!Array.isArray(d.history)||!d.records.every(valid)||!d.history.every(valid)||new Set(d.records.map(id)).size!==d.records.length)throw Error();return d;}catch(e){blocked=true;throw Error('无法读取本地账本。为保护已有数据，已停止写入。请不要清理浏览器数据；可以先导出原始数据留存。');}}
+function write(d){if(blocked)throw Error('本地数据读取失败，不能覆盖。');try{localStorage.setItem(key,JSON.stringify(d));}catch(e){throw Error('保存失败：浏览器储存空间不足或不允许储存。请先下载备份，不要关闭尚未保存的页面。');}}
+function notice(e){$('ledgerNotice').textContent=e.message;}
+function selected(){const d=read();return d.records.filter(r=>r.month.slice(0,4)===$('ledgerYear').value&&(!$('ledgerEmployee').value||r.employee===$('ledgerEmployee').value)).sort((a,b)=>a.month.localeCompare(b.month)||a.employee.localeCompare(b.employee)||a.kind.localeCompare(b.kind));}
+function render(){try{const d=read(),rs=selected();const totals={};rs.forEach(r=>{totals[r.employee]??={due:0,paid:0};totals[r.employee].due+=r.due;totals[r.employee].paid+=r.paid;});const due=rs.reduce((a,r)=>a+r.due,0),paid=rs.reduce((a,r)=>a+r.paid,0);$('annualTotals').textContent=`应发 ¥${money(due)} · 已发 ¥${money(paid)}`;
+$('annualRows').innerHTML=Object.entries(totals).map(([n,t])=>`<tr><td>${escapeHTML(n)}</td><td>${money(t.due)}</td><td>${money(t.paid)}</td><td>${money(t.due-t.paid)}</td></tr>`).join('')||'<tr><td colspan="4">该年份暂无记录</td></tr>';
+$('recordRows').innerHTML=rs.map(r=>`<tr><td>${r.month}</td><td>${escapeHTML(r.employee)}</td><td>${r.kind==='monthly'?'月工资':'季度调整'}</td><td>${money(r.due)}</td><td>${money(r.paid)}</td><td>${money(r.due-r.paid)}</td><td>${escapeHTML(r.paidDate||'未填写')}</td><td><button class="mini" data-record="${escapeHTML(id(r))}">查看／更新</button></td></tr>`).join('')||'<tr><td colspan="8">保存后在这里查看明细</td></tr>';
+$('backupInfo').textContent=`已保存 ${d.records.length} 条记录。${d.lastBackup?'上次下载备份：'+new Date(d.lastBackup).toLocaleString('zh-CN'):'尚未下载备份，请及时备份。'} 差额为负数表示实付超过应发。`; }catch(e){notice(e);}}
+function number(field,optional=false){if($(field).value.trim()===''&&optional)return 0;const n=Number($(field).value);if($(field).value.trim()===''||!Number.isFinite(n)||n<0)throw Error('请填写完整且非负的金额／天数。');return n;}
+function monthly(){const e=employees[empSel.value],r=rules[e.role],sales=number('sales'),receipts=number('huikuan',e.role==='仓库'),leave=number('leave');if(leave>30)throw Error('请假天数不能超过 30 天（现有工资规则按 30 天扣款）。');const commission=e.role==='仓库'?sales*r.monthRate:receipts*Math.min(1,sales/e.target)*r.met;return {sales,receipts,leave,commission:round(commission),due:round(e.base-471-e.base/30*leave+(leave===0?100:0)+commission)};}
+function quarter(){const e=employees[empSel.value],r=rules[e.role],sales=number('qTotal'),target=e.target*3,receipts=number('qHuikuan',e.role==='仓库'),previousPaid=number('qPaid',sales>=target||e.role==='仓库');let due=0;if(sales>=target)due=Math.max(0,(e.role==='仓库'?sales:receipts)-target)*r.qExcess;else if(e.role!=='仓库')due=receipts*(sales/target)*r.unmet-previousPaid;return {sales,receipts,leave:0,commission:0,previousPaid,due:round(due)};}
+function save(kind){try{const month=$('salaryMonth').value;if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month))throw Error('请选择工资月份。');if(kind==='quarterly'&&![3,6,9,12].includes(Number(month.slice(5))))throw Error('季度记录请选择季度末月份：3、6、9 或 12 月。');const result=kind==='monthly'?monthly():quarter();const paid=number('actualPaid'),paidDate=$('paidDate').value;if(paid>0&&!paidDate)throw Error('已发金额大于 0 时，请填写最近发放日期。');const r={...result,employee:empSel.value,month,kind,paid:round(paid),paidDate,note:$('payNote').value,updatedAt:new Date().toISOString()};let d=read(),old=d.records.find(x=>id(x)===id(r));if(old&&!confirm(`${r.employee} ${month}已有${kind==='monthly'?'月工资':'季度调整'}记录。\n原应发 ${money(old.due)}，已发 ${money(old.paid)}；\n新应发 ${money(r.due)}，已发 ${money(r.paid)}。\n确认更新？旧记录将保留在修改历史中。`))return;
+ d=read();const i=d.records.findIndex(x=>id(x)===id(r));if(i>=0){d.history.push({...d.records[i]});d.records[i]=r;}else d.records.push(r);write(d);$(kind==='monthly'?'calcBtn':'qBtn').click();$('saveStatus').textContent=`已保存：${r.employee} ${month}，应发 ¥${money(r.due)}，已发 ¥${money(r.paid)}。请下载备份保留记录。`;$('ledgerYear').value=month.slice(0,4);render();}catch(e){$('saveStatus').textContent=e.message;}}
+$('saveMonth').onclick=()=>save('monthly');$('saveQuarter').onclick=()=>save('quarterly');
+$('recordRows').onclick=e=>{const k=e.target.dataset.record;if(!k)return;try{const r=read().records.find(x=>id(x)===k);empSel.value=r.employee;updateRole();$('salaryMonth').value=r.month;$('actualPaid').value=r.paid;$('paidDate').value=r.paidDate;$('payNote').value=r.note;if(r.kind==='monthly'){$('sales').value=r.sales;$('huikuan').value=r.receipts;$('leave').value=r.leave;$('calcBtn').click();}else{$('qTotal').value=r.sales;$('qHuikuan').value=r.receipts;$('qPaid').value=r.previousPaid||0;$('qBtn').click();}$('saveStatus').textContent=`已载入 ${r.employee} ${r.month} ${r.kind==='monthly'?'月工资':'季度调整'}。上次保存应发 ¥${money(r.due)}，已发 ¥${money(r.paid)}。修改后点击对应保存按钮。`;$('salaryMonth').scrollIntoView({behavior:'smooth',block:'center'});}catch(e){notice(e);}};
+function download(text,name,type){const blob=new Blob([text],{type}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);}
+$('backupBtn').onclick=()=>{try{const d=read();d.lastBackup=new Date().toISOString();download(JSON.stringify(d,null,2),`工资账本备份-${today()}.json`,'application/json');write(d);render();}catch(e){try{const raw=localStorage.getItem(key);if(raw)download(raw,`工资账本原始数据-${today()}.json`,'application/json');}catch(_){}notice(e);}};
+$('csvBtn').onclick=()=>{try{const rows=[['工资月份','员工','类型','销售额','回款','请假天数','应发工资','实际已发','差额','发放日期','备注'],...selected().map(r=>[r.month,r.employee,r.kind==='monthly'?'月工资':'季度调整',r.sales,r.receipts,r.leave,r.due,r.paid,round(r.due-r.paid),r.paidDate,r.note])];const csv=rows.map(row=>row.map(v=>'"'+String(typeof v==='string'&&/^[=+@\-\t\r]/.test(v)?"'"+v:v).replace(/"/g,'""')+'"').join(',')).join('\r\n');download('\uFEFF'+csv,`工资明细-${$('ledgerYear').value}.csv`,'text/csv;charset=utf-8');}catch(e){notice(e);}};
+$('restoreBtn').onclick=async()=>{try{const f=$('restoreFile').files[0];if(!f)throw Error('请先选择备份文件。');if(f.size>20*1024*1024)throw Error('备份文件过大，请检查是否选择了正确文件。');const incoming=JSON.parse(await f.text());if(incoming.version!==1||!Array.isArray(incoming.records)||!Array.isArray(incoming.history)||!incoming.records.every(valid)||!incoming.history.every(valid)||new Set(incoming.records.map(id)).size!==incoming.records.length)throw Error('备份格式或记录内容无效，未导入任何数据。');let d=read();const existing=new Set(d.records.map(id));const add=incoming.records.filter(r=>!existing.has(id(r)));if(!confirm(`备份包含 ${incoming.records.length} 条记录。将添加 ${add.length} 条，跳过 ${incoming.records.length-add.length} 条已有记录。确认合并？`))return;d=read();const current=new Set(d.records.map(id));const toAdd=incoming.records.filter(r=>!current.has(id(r)));d.records.push(...toAdd);const histories=new Set(d.history.map(r=>JSON.stringify(r)));for(const r of incoming.history){const t=JSON.stringify(r);if(!histories.has(t)){d.history.push(r);histories.add(t);}}write(d);$('ledgerNotice').textContent=`已导入 ${toAdd.length} 条记录。已有的员工月份记录未覆盖。`;render();}catch(e){notice(e);}};
+$('ledgerYear').oninput=render;$('ledgerEmployee').onchange=render;window.addEventListener('storage',e=>{if(e.key===key)render();});
+function extract(text){const t=text.replace(/[ \t\u3000]/g,'').replace(/[０-９]/g,c=>String.fromCharCode(c.charCodeAt(0)-65248)).replace(/，/g,',');const names=Object.keys(employees).filter(n=>t.replace(/\s/g,'').includes(n));$('importEmployee').value=names.length===1?names[0]:'';const dates=[...t.matchAll(/(20\d{2})\s*(?:年|[-/.])\s*(1[0-2]|0?[1-9])(?=月|\D|$)/g)].map(m=>`${m[1]}-${m[2].padStart(2,'0')}`);$('importMonth').value=new Set(dates).size===1?dates[0]:'';
+function field(labels){const values=[];for(const line of t.split(/\r?\n/)){for(const label of labels){const pos=line.search(label);if(pos<0)continue;const tail=line.slice(pos+line.match(label)[0].length);const matches=[...tail.matchAll(/(?:^|[^\d.\-])([0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?)(?![\d.])/g)];if(matches.length===1)values.push(Number(matches[0][1].replace(/,/g,'')));}}return values.length===1&&Number.isFinite(values[0])?values[0]:'';}
+$('importSales').value=field([/区域销售额|销售额|营业额|销售金额/]);$('importReceipts').value=field([/回款金额|实收金额|回款|实收/]);$('importLeave').value=field([/请假天数/]);$('proposal').hidden=false;$('importStatus').textContent=names.length>1?'识别到多个员工，请选择本次需要核对的一位。':'已生成待核对数据，空白项请自行填写。';}
+$('parseBtn').onclick=()=>extract($('ocrText').value);
+$('applyImport').onclick=()=>{try{for(const [from,to] of [['importSales','sales'],['importReceipts','huikuan'],['importLeave','leave']]){if($(from).value!==''){number(from);if(from==='importLeave'&&Number($(from).value)>30)throw Error('请假天数不能超过 30 天。');}}if($('importEmployee').value){empSel.value=$('importEmployee').value;updateRole();}if($('importMonth').value)$('salaryMonth').value=$('importMonth').value;for(const [from,to] of [['importSales','sales'],['importReceipts','huikuan'],['importLeave','leave']]){if($(from).value!=='')$(to).value=$(from).value;}$('result').style.display='none';$('importStatus').textContent='已填入核对后的字段；未识别的字段保留原值，请检查计算器全部数据。尚未保存工资记录。';}catch(e){$('importStatus').textContent=e.message;}};
+let imageURL=null;let chosen=null;
+$('sourceFile').onchange=()=>{chosen=$('sourceFile').files[0];$('ocrText').value='';$('proposal').hidden=true;$('importStatus').textContent='';if(imageURL)URL.revokeObjectURL(imageURL);$('previewImage').style.display='none';if(chosen&&/^image\/(png|jpeg|webp)$/.test(chosen.type)){imageURL=URL.createObjectURL(chosen);$('previewImage').src=imageURL;$('previewImage').style.display='block';}};
+function loadOCR(){if(window.Tesseract)return Promise.resolve();return new Promise((resolve,reject)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';s.onload=resolve;s.onerror=()=>{s.remove();reject(Error('无法下载识别组件，请检查网络后重试；仍可手动输入或粘贴文字。'));};document.head.append(s);});}
+$('recognizeBtn').onclick=async()=>{let worker;const file=chosen;if(!file){$('importStatus').textContent='请先选择图片或文字文件。';return;}if(file.size>15*1024*1024){$('importStatus').textContent='文件超过 15MB，请先缩小图片。';return;}$('recognizeBtn').disabled=true;$('sourceFile').disabled=true;$('proposal').hidden=true;try{if(/\.(txt|csv)$/i.test(file.name)){const buffer=await file.arrayBuffer();let text=new TextDecoder('utf-8').decode(buffer);if(text.includes('\uFFFD'))text=new TextDecoder('gb18030').decode(buffer);$('ocrText').value=text;extract(text);}else{if(!/^image\/(png|jpeg|webp)$/.test(file.type))throw Error('请使用 JPG、PNG、WebP 图片，或 TXT、CSV 文件。');$('importStatus').textContent='正在下载识别组件（首次需要联网），图片只在当前设备处理…';await loadOCR();worker=await Tesseract.createWorker('chi_sim+eng',1,{logger:m=>{if(m.status==='recognizing text')$('importStatus').textContent=`正在识别：${Math.round(m.progress*100)}%`;}});const result=await worker.recognize(file);$('ocrText').value=result.data.text;extract(result.data.text);if(!result.data.text.trim())$('importStatus').textContent='没有识别到文字，请换一张清晰截图，或手动填写。';}}catch(e){$('importStatus').textContent='识别失败：'+e.message+' 可手动填写数据。';}finally{if(worker)await worker.terminate().catch(()=>{});$('recognizeBtn').disabled=false;$('sourceFile').disabled=false;}};
+render();
+})();
+</script>
+
 </body>
 </html>
